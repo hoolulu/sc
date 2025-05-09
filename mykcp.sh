@@ -2456,9 +2456,7 @@ show_current_instance_info() {
 	{
 	  "localaddr": ":${target_port}",
 	  "remoteaddr": "${server_ip}:${listen_port}",
-	  "key": "${key}",
-       "autoexpire": 600,
-       "conn": 5
+	  "key": "${key}"
 	}
 	EOF
 	)"
