@@ -3,9 +3,9 @@
 # CPU limit daemon - set PID's max. percentage CPU consumptions
 # ==============================================================
 # Variables
-CPU_LIMIT=1        # Maximum percentage CPU consumption by each PID
+CPU_LIMIT=25        # Maximum percentage CPU consumption by each PID
 DAEMON_INTERVAL=3   # Daemon check interval in seconds
-BLACK_PROCESSES_LIST="BT-Task" # Limit only processes defined in this variable. If variable is empty (default) all violating processes are limited.
+BLACK_PROCESSES_LIST="server_linux_am" # Limit only processes defined in this variable. If variable is empty (default) all violating processes are limited.
 WHITE_PROCESSES_LIST=   # Limit all processes except processes defined in this variable. If variable is empty (default) all violating processes are limited.
 # Check if one of the variables BLACK_PROCESSES_LIST or WHITE_PROCESSES_LIST is defined.
 if [[ -n "$BLACK_PROCESSES_LIST" && -n "$WHITE_PROCESSES_LIST" ]] ; then    # If both variables are defined then error is produced.
