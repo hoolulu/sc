@@ -4,10 +4,10 @@ export PATH
 #===============================================================================================
 #   System Required:  CentOS/Rocky Linux/Debian/Ubuntu (32bit/64bit)
 #   Description:  A tool to auto-compile & install kcptun-server on Linux
-#   Author: Clang
+#   Author: Clang (Modified for modern systems)
 #   Intro:  http://koolshare.cn/forum-72-1.html
 #===============================================================================================
-version="3.6"
+version="3.7" # Bumped version to reflect changes
 str_program_dir="/usr/local/kcp-server"
 kcptun_releases="https://api.github.com/repos/xtaci/kcptun/releases/latest"
 kcptun_api_filename="/tmp/kcptun_api_file.txt"
@@ -41,7 +41,9 @@ shell_update(){
     echo "Check updates for shell..."
     remote_shell_version=`wget --no-check-certificate -qO- ${str_install_shell} | sed -n '/'^version'/p' | cut -d\" -f2`
     if [ ! -z ${remote_shell_version} ]; then
-        if [[ "${version}" != "${remote_shell_version}" ]];then
+        if [[ "${version}" > "${remote_shell_version}" ]];then
+            echo "Local shell is newer, skip update."
+        elif [[ "${version}" != "${remote_shell_version}" ]];then
             echo -e "${COLOR_GREEN}Found a new version,update now!!!${COLOR_END}"
             echo
             echo -n "Update shell ..."
@@ -88,20 +90,78 @@ function get_char(){
     stty $SAVEDSTTY
 }
 
-# Check OS
+# Check OS (Modern and reliable method)
 function checkos(){
-    if grep -Eqi "CentOS" /etc/issue || grep -Eq "CentOS" /etc/*-release; then
-        OS=CentOS
-    elif grep -Eqi "Rocky" /etc/issue || grep -Eq "Rocky" /etc/*-release; then
-        OS=CentOS 
-    elif grep -Eqi "Debian" /etc/issue || grep -Eq "Debian" /etc/*-release; then
-        OS=Debian
-    elif grep -Eqi "Ubuntu" /etc/issue || grep -Eq "Ubuntu" /etc/*-release; then
-        OS=Ubuntu
+    # First, try the modern /etc/os-release file which is standard now
+    if [ -f /etc/os-release ]; then
+        # Source the file to get variables like ID and ID_LIKE
+        . /etc/os-release
+        
+        # Check based on the ID variable
+        if [[ "$ID" == "rocky" || "$ID" == "centos" || "$ID_LIKE" == *"rhel"* ]]; then
+            OS=CentOS
+        elif [[ "$ID" == "debian" ]]; then
+            OS=Debian
+        elif [[ "$ID" == "ubuntu" ]]; then
+            OS=Ubuntu
+        else
+            # If we don't recognize the ID, we can't proceed
+            echo "Not support OS based on ID='${ID}'. Please reinstall OS and retry!"
+            exit 1
+        fi
     else
+        # Fallback for very old systems that don't have /etc/os-release
+        echo "/etc/os-release not found. This script requires a modern Linux distribution."
         echo "Not support OS, Please reinstall OS and retry!"
         exit 1
     fi
+}
+
+# NEW FUNCTION: Prepare environment by installing dependencies and creating directories
+function prepare_environment(){
+    echo "-----------------------------------------------------"
+    echo "Checking and preparing the system environment..."
+    echo "-----------------------------------------------------"
+    
+    # Check for the 'tar' command, which is essential for unpacking files.
+    if ! command -v tar &> /dev/null; then
+        echo -e "${COLOR_YELOW}'tar' command not found. Attempting to install it...${COLOR_END}"
+        if [ "${OS}" == 'CentOS' ]; then
+            dnf install -y tar || yum install -y tar
+        else
+            apt-get update
+            apt-get install -y tar
+        fi
+        # Verify installation
+        if ! command -v tar &> /dev/null; then
+            echo -e "${COLOR_RED}Failed to install 'tar'. Please install it manually and re-run the script.${COLOR_END}"
+            exit 1
+        else
+             echo -e "${COLOR_GREEN}'tar' has been successfully installed.${COLOR_END}"
+        fi
+    else
+        echo -e "'tar' command... [${COLOR_GREEN}OK${COLOR_END}]"
+    fi
+
+    # Check for the '/etc/init.d' directory, required by this legacy script.
+    if [ ! -d "/etc/init.d" ]; then
+        echo -e "${COLOR_YELOW}'/etc/init.d' directory not found. Creating it for compatibility...${COLOR_END}"
+        mkdir -p /etc/init.d
+        if [ -d "/etc/init.d" ]; then
+            echo -e "${COLOR_GREEN}'/etc/init.d' has been successfully created.${COLOR_END}"
+        else
+            echo -e "${COLOR_RED}Failed to create '/etc/init.d'. Please check permissions.${COLOR_END}"
+            exit 1
+        fi
+    else
+        echo -e "'/etc/init.d' directory... [${COLOR_GREEN}OK${COLOR_END}]"
+    fi
+
+    echo "-----------------------------------------------------"
+    echo "Environment preparation complete."
+    echo "-----------------------------------------------------"
+    echo ""
+    sleep 1
 }
 
 # Get version
@@ -146,7 +206,7 @@ fi
 
 # Disable selinux
 function disable_selinux(){
-    if [ -s /etc/selinux/config ] && grep 'SELINUX=enforcing' /etc/selinux/config; then
+    if [ -s /etc/selinux/config ] && grep -q 'SELINUX=enforcing' /etc/selinux/config; then
         sed -i 's/SELINUX=enforcing/SELINUX=disabled/g' /etc/selinux/config
         setenforce 0
     fi
@@ -210,41 +270,37 @@ function fun_input_mtu(){
 }
 # ====== check packs ======
 function check_net_tools(){
-    netstat -V 2>&1 >/dev/null
-    if [[ $? -gt 6 ]] ;then
-        echo " Run net-tools failed"
+    if ! command -v netstat &> /dev/null; then
+        echo " 'net-tools' not found. Installing..."
         if [ "${OS}" == 'CentOS' ]; then
-            echo " Install centos net-tools ..."
-            yum -y install net-tools
+            dnf -y install net-tools || yum -y install net-tools
         else
-            echo " Install debian/ubuntu net-tools ..."
             apt-get update -y
             apt-get install -y net-tools
         fi
     fi
-    echo $result
 }
 function check_iptables(){
-    iptables -V >/dev/null 2>&1
-    if [[ $? -gt 1 ]] ;then
-        echo " Run iptables failed"
+    if ! command -v iptables &> /dev/null; then
+        echo " 'iptables' not found. Installing..."
         if [ "${OS}" == 'CentOS' ]; then
-            echo " Install centos iptables ..."
-            yum -y install iptables policycoreutils libpcap libpcap-devel
+            dnf -y install iptables policycoreutils libpcap libpcap-devel || yum -y install iptables policycoreutils libpcap libpcap-devel
         else
-            echo " Install debian/ubuntu iptables ..."
             apt-get update -y
             apt-get install -y iptables libpcap-dev
         fi
     fi
-    echo $result
 }
 function check_md5sum(){
-    md5sum --version >/dev/null 2>&1
-    if [[ $? -gt 6 ]] ;then
-        echo " Run md5sum failed"
+    if ! command -v md5sum &> /dev/null; then
+        echo " 'md5sum' not found. Installing..."
+        if [ "${OS}" == 'CentOS' ]; then
+            dnf -y install coreutils || yum -y install coreutils
+        else
+            apt-get update -y
+            apt-get install -y coreutils
+        fi
     fi
-    echo $result
 }
 # Random password
 function fun_randstr(){
@@ -284,13 +340,7 @@ function fun_download_file(){
             echo "Failed to download ${kcptun_latest_filename} file!"
             exit 1
         fi
-        #check_md5sum
-        #kcptun_md5_web=$( cat ${kcptun_api_filename} | grep \"body\" | grep ${kcptun_latest_filename} | sed 's/\\n/\n/g' | sed -n '/'${kcptun_latest_filename}'/p' | awk '{print $4}' )
-        #down_local_md5=`md5sum ${kcptun_latest_filename} | awk '{print $1}'`
-        #if [ "${down_local_md5}" != "${kcptun_md5_web}" ]; then
-        #    echo "md5sum not match,Failed to download ${kcptun_latest_filename} file!"
-        #    exit 1
-        #fi
+        
         tar xzf ${kcptun_latest_filename}
         mv server_linux_${ARCHS} ${str_program_dir}/${program_name}
         rm -f ${kcptun_latest_filename} client_linux_${ARCHS} ${kcptun_api_filename}
@@ -470,8 +520,7 @@ function install_program_server_clang(){
 
     [ ! -d ${str_program_dir} ] && mkdir -p ${str_program_dir}
     cd ${str_program_dir}
-    echo $PWD
-
+    
 # Config file
 cat > ${str_program_dir}/${program_config_file}<<-EOF
 {
@@ -541,7 +590,7 @@ EOF
             chmod +x /etc/network/if-pre-up.d/iptables
         fi
     fi
-    [ -s ${kcp_init} ] && ln -s ${kcp_init} /usr/bin/${program_name}
+    [ -s ${kcp_init} ] && ln -sf ${kcp_init} /usr/bin/${program_name}
     ${kcp_init} start
     str_sndwnd=`sed -n '/sndwnd/p' ${str_program_dir}/server-kcptun.json | sed 's/[[:space:]]*//g;s/,//g' | cut -d: -f2`
     str_rcvwnd=`sed -n '/rcvwnd/p' ${str_program_dir}/server-kcptun.json | sed 's/[[:space:]]*//g;s/,//g' | cut -d: -f2`
@@ -572,6 +621,7 @@ EOF
 function pre_install_clang(){
     fun_clang "clear"
     checkos
+    prepare_environment
     check_centosversion
     check_os_bit
     disable_selinux
@@ -639,6 +689,7 @@ function update_program_server_clang(){
     fun_clang "clear"
     echo "============== Update ${program_name} =============="
     checkos
+    prepare_environment
     check_centosversion
     check_os_bit
     install_shell=${strPath}
@@ -669,7 +720,7 @@ function update_program_server_clang(){
             chmod +x ${kcp_init}
             update-rc.d -f ${program_name} defaults
         fi
-        [ -s ${kcp_init} ] && ln -s ${kcp_init} /usr/bin/${program_name}
+        [ -s ${kcp_init} ] && ln -sf ${kcp_init} /usr/bin/${program_name}
         [ ! -x ${kcp_init} ] && chmod 755 ${kcp_init}
         ${kcp_init} start
         ${str_program_dir}/${program_name} -version
@@ -683,12 +734,14 @@ clear
 strPath=`pwd`
 rootness
 fun_set_text_color
-shell_update
+#shell_update # Disabled shell update to prevent overwriting our changes
 # Initialization
 action=$1
 [  -z $1 ]
 case "$action" in
 install)
+    # Clean up previous failed attempts before starting
+    rm -rf /usr/local/kcp-server
     pre_install_clang 2>&1 | tee /root/${program_name}-install.log
     ;;
 config)
@@ -705,4 +758,4 @@ update)
     echo "Arguments error! [${action} ]"
     echo "Usage: `basename $0` {install|uninstall|update|config}"
     ;;
-esac
+esac```
