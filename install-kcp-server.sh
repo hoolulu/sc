@@ -2,7 +2,7 @@
 PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
 export PATH
 #===============================================================================================
-#   System Required:  CentOS Debian or Ubuntu (32bit/64bit)
+#   System Required:  CentOS/Rocky Linux/Debian/Ubuntu (32bit/64bit)
 #   Description:  A tool to auto-compile & install kcptun-server on Linux
 #   Author: Clang
 #   Intro:  http://koolshare.cn/forum-72-1.html
@@ -88,28 +88,17 @@ function get_char(){
     stty $SAVEDSTTY
 }
 
-# Check OS (Modern and reliable method)
+# Check OS
 function checkos(){
-    # First, try the modern /etc/os-release file which is standard now
-    if [ -f /etc/os-release ]; then
-        # Source the file to get variables like ID and ID_LIKE
-        . /etc/os-release
-        
-        # Check based on the ID variable
-        if [[ "$ID" == "rocky" || "$ID" == "centos" || "$ID_LIKE" == *"rhel"* ]]; then
-            OS=CentOS
-        elif [[ "$ID" == "debian" ]]; then
-            OS=Debian
-        elif [[ "$ID" == "ubuntu" ]]; then
-            OS=Ubuntu
-        else
-            # If we don't recognize the ID, we can't proceed
-            echo "Not support OS based on ID='${ID}'. Please reinstall OS and retry!"
-            exit 1
-        fi
+    if grep -Eqi "CentOS" /etc/issue || grep -Eq "CentOS" /etc/*-release; then
+        OS=CentOS
+    elif grep -Eqi "Rocky" /etc/issue || grep -Eq "Rocky" /etc/*-release; then
+        OS=CentOS 
+    elif grep -Eqi "Debian" /etc/issue || grep -Eq "Debian" /etc/*-release; then
+        OS=Debian
+    elif grep -Eqi "Ubuntu" /etc/issue || grep -Eq "Ubuntu" /etc/*-release; then
+        OS=Ubuntu
     else
-        # Fallback for very old systems that don't have /etc/os-release
-        echo "/etc/os-release not found. This script requires a modern Linux distribution."
         echo "Not support OS, Please reinstall OS and retry!"
         exit 1
     fi
