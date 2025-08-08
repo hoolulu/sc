@@ -93,7 +93,7 @@ function checkos(){
     if grep -Eqi "CentOS" /etc/issue || grep -Eq "CentOS" /etc/*-release; then
         OS=CentOS
     elif grep -Eqi "Rocky" /etc/issue || grep -Eq "Rocky" /etc/*-release; then
-        OS=CentOS 
+        OS=CentOS
     elif grep -Eqi "Debian" /etc/issue || grep -Eq "Debian" /etc/*-release; then
         OS=Debian
     elif grep -Eqi "Ubuntu" /etc/issue || grep -Eq "Ubuntu" /etc/*-release; then
