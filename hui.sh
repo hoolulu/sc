@@ -140,8 +140,8 @@ check_sys() {
   major_version=$(echo "${version}" | cut -d. -f1)
 
   case $release in
-  rocky)
-    echo_content green "Supported Rocky Linux version detected: $version"
+  "almalinux" | "rocky")
+    echo_content green "Supported $NAME version detected: $version"
     ;;
   centos)
     if [[ $major_version -ge 6 ]]; then
@@ -378,7 +378,7 @@ install_h_ui_systemd() {
 
   timedatectl set-timezone ${h_ui_time_zone} && timedatectl set-local-rtc 0
   systemctl restart rsyslog
-  if [[ "${release}" == "centos" || "${release}" == "rocky" ]]; then
+  if [[ "${release}" == "centos" || "${release}" == "rocky" || "${release}" == "almalinux" ]]; then
     systemctl restart crond
   elif [[ "${release}" == "debian" || "${release}" == "ubuntu" ]]; then
     systemctl restart cron
