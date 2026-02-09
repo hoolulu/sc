@@ -86,7 +86,7 @@ clear
 
 cat >&1 <<-'EOF'
 #########################################################
-# Kcptun 服务端一键安装脚本                             #
+# Kcptun 服务端一键安装脚本（自己上传服务端文件20260209）                             #
 # 该脚本支持 Kcptun 服务端的安装、更新、卸载及配置      #
 # 脚本作者: Index <kuoruan@gmail.com>                   #
 # 作者博客: https://blog.kuoruan.com/                   #
@@ -220,6 +220,7 @@ get_os_info() {
 		[ -r /etc/fedora-release ] && lsb_dist='fedora'
 		[ -r /etc/oracle-release ] && lsb_dist='oracleserver'
 		[ -r /etc/centos-release ] && lsb_dist='centos'
+    [ -r /etc/rocky-release ] && lsb_dist='rocky'
 		[ -r /etc/redhat-release ] && lsb_dist='redhat'
 		[ -r /etc/photon-release ] && lsb_dist='photon'
 		[ -r /etc/os-release ] && lsb_dist="$(. /etc/os-release && echo "$ID")"
@@ -330,7 +331,7 @@ get_content() {
 		fi
 
 		# 将所有的换行符替换为自定义标签，防止 jq 解析失败
-		content="$(wget -qO- --no-check-certificate "$url" | sed -r 's/(\\r)?\\n/#br#/g')"
+		content="$(wget -qO- -U "Mozilla/5.0" --no-check-certificate "$url" | sed -r 's/(\\r)?\\n/#br#/g')"
 
 		if [ "$?" != "0" ] || [ -z "$content" ]; then
 			retry=$(expr $retry + 1)
@@ -404,7 +405,7 @@ download_file() {
 			exit 1
 		fi
 
-		( set -x; wget -O "$file" --no-check-certificate "$url" )
+		( set -x; wget -O "$file" -U "Mozilla/5.0" --no-check-certificate "$url" )
 		if [ "$?" != "0" ] || [ -n "$verify_cmd" ] && ! verify_file; then
 			retry=$(expr $retry + 1)
 			download_file_to_path
@@ -522,6 +523,7 @@ get_instance_count() {
 # 通过 API 获取对应版本号 Kcptun 的 release 信息
 # 传入 Kcptun 版本号
 get_kcptun_version_info() {
+     return 0 # 强行返回成功，不让它去联网
 	local request_version="$1"
 
 	local version_content=""
@@ -617,66 +619,30 @@ get_shell_version_info() {
 
 # 下载并安装 Kcptun
 install_kcptun() {
-	if [ -z "$kcptun_release_download_url" ]; then
-		get_kcptun_version_info "$1"
+    echo "检测到 GitHub 仓库已清空，正在使用本地备份文件安装..."
 
-		if [ "$?" != "0" ]; then
-			cat >&2 <<-'EOF'
-			获取 Kcptun 版本信息或下载地址失败!
-			可能是 GitHub 改版，或者从网络获取到的内容不正确。
-			请联系脚本作者。
-			EOF
-			exit 1
-		fi
-	fi
+    if [ ! -d "$KCPTUN_INSTALL_DIR" ]; then
+        mkdir -p "$KCPTUN_INSTALL_DIR"
+    fi
 
-	local kcptun_file_name="kcptun-${kcptun_release_tag_name}.tar.gz"
-	download_file "$kcptun_release_download_url" "$kcptun_file_name" "$kcptun_release_verify"
+    if [ ! -d "$KCPTUN_LOG_DIR" ]; then
+        mkdir -p "$KCPTUN_LOG_DIR"
+        chmod a+w "$KCPTUN_LOG_DIR"
+    fi
 
-	if [ ! -d "$KCPTUN_INSTALL_DIR" ]; then
-		(
-			set -x
-			mkdir -p "$KCPTUN_INSTALL_DIR"
-		)
-	fi
+    # 核心逻辑：直接从 root 目录拷贝文件到安装目录
+    local local_file="/root/server_linux_amd64"
+    if [ -f "$local_file" ]; then
+        cp -f "$local_file" "${KCPTUN_INSTALL_DIR}/server_linux_amd64"
+        chmod a+x "${KCPTUN_INSTALL_DIR}/server_linux_amd64"
+        echo "文件拷贝成功！"
+    else
+        echo "错误：未在 /root 目录下找到 server_linux_amd64 文件！"
+        exit 1
+    fi
 
-	if [ ! -d "$KCPTUN_LOG_DIR" ]; then
-		(
-			set -x
-			mkdir -p "$KCPTUN_LOG_DIR"
-			chmod a+w "$KCPTUN_LOG_DIR"
-		)
-	fi
-
-	(
-		set -x
-		tar -zxf "$kcptun_file_name" -C "$KCPTUN_INSTALL_DIR"
-		sleep 3
-	)
-
-	local kcptun_server_file=""
-	kcptun_server_file="$(get_kcptun_server_file)"
-
-	if [ ! -f "$kcptun_server_file" ]; then
-		cat >&2 <<-'EOF'
-		未在解压文件中找到 Kcptun 服务端执行文件!
-		通常这不会发生，可能的原因是 Kcptun 作者打包文件的时候更改了文件名。
-		你可以尝试重新安装，或者联系脚本作者。
-		EOF
-		exit 1
-	fi
-
-	chmod a+x "$kcptun_server_file"
-
-	if [ -z "$(get_installed_version)" ]; then
-		cat >&2 <<-'EOF'
-		无法找到适合当前服务器的 kcptun 可执行文件
-		你可以尝试从源码编译。
-		EOF
-		exit 1
-	fi
-
-	rm -f "$kcptun_file_name" "${KCPTUN_INSTALL_DIR}/client_$file_suffix"
+    # 假装获取到了版本号，防止后续流程报错
+    kcptun_release_tag_name="v2024.Backup"
 }
 
 # 安装依赖软件
@@ -720,7 +686,7 @@ install_deps() {
 				( set -x; sleep 3; apt-get install -y -q python )
 			fi
 			;;
-		fedora|centos|redhat|oraclelinux|photon)
+		fedora|centos|rocky|redhat|oraclelinux|photon)
 			if [ "$lsb_dist" = "fedora" ] && [ "$dist_version" -ge "22" ]; then
 				if ! command_exists wget; then
 					( set -x; sleep 3; dnf -y -q install wget ca-certificates )
@@ -1093,7 +1059,7 @@ download_startup_file() {
 			ubuntu|debian|raspbian)
 				supervisor_startup_file_url="$SUPERVISOR_SERVICE_FILE_DEBIAN_URL"
 				;;
-			fedora|centos|redhat|oraclelinux|photon)
+			fedora|centos|rocky|redhat|oraclelinux|photon)
 				supervisor_startup_file_url="$SUPERVISOR_SERVICE_FILE_REDHAT_URL"
 				;;
 			*)
@@ -1160,7 +1126,7 @@ enable_supervisor() {
 					update-rc.d -f supervisord defaults
 				)
 				;;
-			fedora|centos|redhat|oraclelinux|photon)
+			fedora|centos|rocky|redhat|oraclelinux|photon)
 				(
 					set -x
 					chkconfig --add supervisord
@@ -2613,7 +2579,7 @@ do_uninstall() {
 								update-rc.d -f supervisord remove
 							)
 							;;
-						fedora|centos|redhat|oraclelinux|photon)
+						fedora|centos|rocky|redhat|oraclelinux|photon)
 							(
 								set -x
 								chkconfig supervisord off
