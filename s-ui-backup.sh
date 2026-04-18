@@ -14,6 +14,45 @@ DEBUG_MODE=true
 # 数据库备份：固定使用本地文件模式
 DB_SOURCE="/usr/local/s-ui/db/s-ui.db"
 
+# 检测并自动安装 jq（如果未安装）
+check_and_install_jq() {
+  if command -v jq &>/dev/null; then
+    return 0
+  fi
+  
+  echo ">> 未检测到 jq，正在尝试自动安装..."
+  
+  # 检测包管理器并安装
+  if command -v apt-get &>/dev/null; then
+    # Debian/Ubuntu
+    apt-get update > /dev/null 2>&1 && apt-get install -y jq > /dev/null 2>&1
+  elif command -v yum &>/dev/null; then
+    # CentOS/RHEL/Alma/Rocky
+    yum install -y jq > /dev/null 2>&1
+  elif command -v apk &>/dev/null; then
+    # Alpine
+    apk add jq > /dev/null 2>&1
+  elif command -v pacman &>/dev/null; then
+    # Arch
+    pacman -S --noconfirm jq > /dev/null 2>&1
+  fi
+  
+  # 再次检测
+  if command -v jq &>/dev/null; then
+    echo "✅ jq 安装成功"
+    return 0
+  else
+    echo "❌ jq 自动安装失败，请手动安装后重试："
+    echo "   Debian/Ubuntu: apt-get install -y jq"
+    echo "   CentOS/RHEL:   yum install -y jq"
+    echo "   Alpine:        apk add jq"
+    exit 1
+  fi
+}
+
+# 执行 jq 检测
+check_and_install_jq
+
 # CURL公共参数（基础版，用于WebDAV探测等操作）
 # 修复：移除 --compressed，避免大文件传输时CPU飙高
 CURL_COMMON_BASE=("-sS" "--ipv4" "--connect-timeout" "15" "--max-time" "120")
