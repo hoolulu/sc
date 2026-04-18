@@ -5,22 +5,14 @@ set -eo pipefail
 SCRIPT_ABS_PATH=$(realpath "$0")
 CONFIG_FILE=""
 TEMP_DIR=""
-VERSION="3.3"  # 修复版本
+VERSION="3.4"  # 修改版本
 # 跳过SSL证书验证（解决自签名证书问题，不需要可改为false）
 SKIP_SSL_VERIFY=true
 # 调试模式：开启后会输出详细的WebDAV文件解析过程，排查问题用，正常使用可改为false
 DEBUG_MODE=true
 
-# 核心修复：优先使用本地数据库文件备份，避免API序列化大表导致内存爆炸
-# 如果脚本与S-UI在同一台机器，强烈建议保持true；如远程备份S-UI，设为false
-USE_LOCAL_DB_FIRST=true
-
-# API模式：排除大数据表（流量统计），多个表用逗号分隔，如 "clientTraffics,clientInfos"
-# 留空表示不排除（不推荐，会拉取全量数据库）
-DB_EXCLUDE_FIELDS="clientTraffics"
-
-# 是否同时备份配置JSON（通过load API）。false可显著减少资源消耗。
-BACKUP_LOAD_JSON=false
+# 数据库备份：固定使用本地文件模式
+DB_SOURCE="/usr/local/s-ui/db/s-ui.db"
 
 # CURL公共参数（基础版，用于WebDAV探测等操作）
 # 修复：移除 --compressed，避免大文件传输时CPU飙高
@@ -138,9 +130,9 @@ auto_add_crontab() {
   fi
 }
 
-# 修复：本地数据库文件备份函数（零开销，不经过API）
+# 本地数据库文件备份函数（零开销，不经过API）
 backup_local_db() {
-  local db_src="/usr/local/s-ui/db/s-ui.db"
+  local db_src="$DB_SOURCE"
   local db_dst="$1"
   
   if [[ ! -f "$db_src" ]]; then
@@ -158,60 +150,7 @@ backup_local_db() {
   [[ -s "$db_dst" ]]
 }
 
-# 修复：通过API下载数据库，排除大表并流式解码base64
-download_db_via_api() {
-  local api_url="$1"
-  local token="$2"
-  local out_file="$3"
-  
-  local exclude_param=""
-  if [[ -n "$DB_EXCLUDE_FIELDS" ]]; then
-    exclude_param="?exclude=${DB_EXCLUDE_FIELDS}"
-  fi
-  
-  # 关键修复：
-  # 1. 使用 -w 同时获取HTTP状态码和输出到stdout
-  # 2. 通过管道流式传给jq提取obj字段，再base64解码
-  # 3. 避免一次性将大JSON加载到内存
-  # 4. 移除 --compressed，减少CPU消耗
-  
-  local http_status
-  http_status=$(curl "${CURL_COMMON_DOWNLOAD[@]}" \
-    -H "Token: $token" \
-    -w "\n%{http_code}" \
-    -o - \
-    "${api_url}${exclude_param}" 2>/dev/null | {
-      local body=""
-      local code=""
-      while IFS= read -r line; do
-        if [[ "$line" =~ ^[0-9]{3}$ ]]; then
-          code="$line"
-        else
-          body="${body}${line}"$'\n'
-        fi
-      done
-      
-      if [[ "$code" != "200" ]]; then
-        echo "HTTP_$code" >&2
-        exit 1
-      fi
-      
-      # 流式解析：提取obj字段的base64并解码
-      # 注意：如果响应体极大，jq解析仍可能消耗较多内存，但比shell字符串处理高效得多
-      if ! echo "$body" | jq -r '.obj // empty' | base64 -d > "$out_file" 2>/dev/null; then
-        echo "DECODE_ERROR" >&2
-        exit 1
-      fi
-    })
-  
-  local curl_exit=$?
-  if [[ $curl_exit -ne 0 ]] || [[ ! -s "$out_file" ]]; then
-    return 1
-  fi
-  return 0
-}
-
-# 修复：通过API下载配置JSON（可选）
+# 通过API下载配置JSON
 download_config_via_api() {
   local api_url="$1"
   local token="$2"
@@ -227,7 +166,7 @@ download_config_via_api() {
   return 0
 }
 
-# 核心备份主函数（修复版）
+# 核心备份主函数（修改版）
 run_backup() {
   # 配置参数校验
   [[ -z "$TOKEN" ]] && error_exit "S-UI API TOKEN 未配置"
@@ -249,11 +188,7 @@ run_backup() {
   if [[ -t 0 ]]; then
     echo "=== 开始执行S-UI备份任务 ==="
     echo "备份时间: $(date '+%Y-%m-%d %H:%M:%S')"
-    if [[ "$USE_LOCAL_DB_FIRST" == "true" ]]; then
-      echo "备份模式: 优先本地数据库文件（零API开销）"
-    else
-      echo "备份模式: API远程拉取（排除字段: ${DB_EXCLUDE_FIELDS:-无}）"
-    fi
+    echo "备份模式: 本地数据库文件 + API配置JSON"
     check_webdav_access "$WEBDAV_URL" "$WEBDAV_USER" "$WEBDAV_PASS"
   fi
 
@@ -263,59 +198,21 @@ run_backup() {
 
   DB_FILE="$TEMP_DIR/s-ui-db-$DATE.db"
   CONFIG_FILE="$TEMP_DIR/s-ui-config-$DATE.json"
-  LOCAL_BACKUP_SUCCESS=false
 
-  # 修复点1：优先使用本地文件备份，避免API拉取大文件导致内存爆炸
-  if [[ "$USE_LOCAL_DB_FIRST" == "true" ]]; then
-    if [[ -t 0 ]]; then echo ">> 正在通过本地文件备份数据库..."; fi
-    if backup_local_db "$DB_FILE"; then
-      if [[ -t 0 ]]; then echo "   ✅ 本地数据库备份成功（通过sqlite3在线备份）"; fi
-      LOCAL_BACKUP_SUCCESS=true
-    else
-      if [[ -t 0 ]]; then echo "   ⚠️  本地备份失败（文件不存在或无sqlite3），回退到API模式..."; fi
-    fi
-  fi
-
-  # 修复点2：本地备份失败时，使用API但排除流量统计大表
-  if [[ "$LOCAL_BACKUP_SUCCESS" != "true" ]]; then
-    if [[ -t 0 ]]; then echo ">> 正在通过API拉取数据库备份（已排除大字段: ${DB_EXCLUDE_FIELDS:-无}）..."; fi
-    
-    if ! download_db_via_api "$HOST/app/apiv2/getdb" "$TOKEN" "$DB_FILE"; then
-      # 如果带exclude失败，尝试不带exclude（兼容旧版本）
-      if [[ -n "$DB_EXCLUDE_FIELDS" ]]; then
-        if [[ -t 0 ]]; then echo "   ⚠️  带排除参数失败，尝试拉取全量数据库..."; fi
-        DB_EXCLUDE_FIELDS=""
-        if ! download_db_via_api "$HOST/app/apiv2/getdb" "$TOKEN" "$DB_FILE"; then
-          error_exit "数据库备份拉取失败，请检查TOKEN、HOST地址及S-UI服务状态"
-        fi
-      else
-        error_exit "数据库备份拉取失败，请检查TOKEN和HOST地址"
-      fi
-    fi
-    
-    # 验证是否为有效的SQLite文件（SQLite文件头为 SQLite format 3\0）
-    if [[ -s "$DB_FILE" ]]; then
-      local magic
-      magic=$(head -c 16 "$DB_FILE" | tr -d '\0')
-      if [[ "$magic" != *"SQLite format 3"* ]]; then
-        error_exit "拉取的数据库文件不是有效的SQLite格式，可能是API返回异常或base64解码失败"
-      fi
-    else
-      error_exit "拉取的数据库文件为空，备份终止"
-    fi
-  fi
-
-  # 修复点3：配置JSON备份改为可选（默认关闭），减少资源消耗
-  if [[ "$BACKUP_LOAD_JSON" == "true" ]]; then
-    if [[ -t 0 ]]; then echo ">> 正在拉取S-UI配置备份（可选）..."; fi
-    if ! download_config_via_api "$HOST/app/apiv2/load" "$TOKEN" "$CONFIG_FILE"; then
-      if [[ -t 0 ]]; then echo "   ⚠️  配置备份拉取失败（非致命错误，数据库备份已完成）"; fi
-      # 创建一个空标记文件避免后续上传报错
-      echo '{"success":false,"msg":"load backup skipped"}' > "$CONFIG_FILE"
-    fi
+  # 1. 本地数据库文件备份
+  if [[ -t 0 ]]; then echo ">> 正在通过本地文件备份数据库..."; fi
+  if backup_local_db "$DB_FILE"; then
+    if [[ -t 0 ]]; then echo "   ✅ 本地数据库备份成功（通过sqlite3在线备份）"; fi
   else
-    # 创建空标记文件，保持WebDAV文件命名一致性
-    echo '{"success":false,"msg":"load backup disabled"}' > "$CONFIG_FILE"
+    error_exit "本地数据库备份失败，请检查文件是否存在：$DB_SOURCE"
+  fi
+
+  # 2. 通过API下载配置JSON（固定启用）
+  if [[ -t 0 ]]; then echo ">> 正在拉取S-UI配置备份..."; fi
+  if ! download_config_via_api "$HOST/app/apiv2/load" "$TOKEN" "$CONFIG_FILE"; then
+    if [[ -t 0 ]]; then echo "   ⚠️  配置备份拉取失败（非致命错误，数据库备份已完成）"; fi
+    # 创建一个空标记文件避免后续上传报错
+    echo '{"success":false,"msg":"load backup skipped"}' > "$CONFIG_FILE"
   fi
 
   # 3. 检查并创建WebDAV备份目录
@@ -423,26 +320,11 @@ interactive_setup() {
     error_exit "HOST地址必须以http/https开头"
   fi
 
-  # 修复提示：说明优先本地备份
   echo "----------------------------------------"
-  echo "【重要】备份模式选择："
-  echo "  1) 本地优先模式（推荐）：如果脚本与S-UI同机，直接复制数据库文件，零API开销"
-  echo "  2) API模式：通过API拉取，适合远程备份"
-  read -e -i "1" -p "请选择备份模式 (1-本地优先, 2-API模式): " BACKUP_MODE
-  if [[ "$BACKUP_MODE" == "2" ]]; then
-    USE_LOCAL_DB_FIRST=false
-    echo "   已选择API模式"
-    echo "   建议排除流量统计大表以减少资源消耗"
-    read -e -i "clientTraffics" -p "请输入要排除的数据库字段（留空不排除）: " DB_EXCLUDE_FIELDS
-  else
-    USE_LOCAL_DB_FIRST=true
-    echo "   已选择本地优先模式"
-    if [[ -f /usr/local/s-ui/db/s-ui.db ]]; then
-      echo "   ✅ 检测到本地数据库文件"
-    else
-      echo "   ⚠️ 未检测到本地数据库文件，将自动回退到API模式"
-    fi
-  fi
+  echo "【备份说明】"
+  echo "  - 数据库：使用本地文件备份（零开销，不经过API）"
+  echo "  - 配置JSON：通过API拉取（固定启用）"
+  echo "----------------------------------------"
 
   # 3. WebDAV 完整地址输入
   while true; do
@@ -487,14 +369,6 @@ interactive_setup() {
     echo "错误: 保留份数必须是正整数"
   done
 
-  # 修复：是否备份配置JSON（默认是）
-  read -e -i "y" -p "是否同时备份配置JSON文件(load API，会额外消耗资源)? (y/n): " BACKUP_JSON
-  if [[ "$BACKUP_JSON" =~ ^[Yy]$ ]]; then
-    BACKUP_LOAD_JSON=true
-  else
-    BACKUP_LOAD_JSON=false
-  fi
-
   # 生成配置文件
   echo "----------------------------------------"
   read -e -i "$HOME/.s-ui-backup.conf" -p "请输入配置文件保存路径: " CONFIG_FILE
@@ -510,12 +384,6 @@ WEBDAV_USER="$WEBDAV_USER"
 WEBDAV_PASS="$WEBDAV_PASS"
 WEBDAV_DIR="$WEBDAV_DIR"
 RETENTION_COUNT="$RETENTION_COUNT"
-# 修复新增：优先使用本地数据库文件备份，避免API拉取导致内存爆炸
-USE_LOCAL_DB_FIRST=$USE_LOCAL_DB_FIRST
-# 修复新增：API模式下排除的大数据表（逗号分隔）
-DB_EXCLUDE_FIELDS="$DB_EXCLUDE_FIELDS"
-# 修复新增：是否同时备份配置JSON（默认false，减少资源消耗）
-BACKUP_LOAD_JSON=$BACKUP_LOAD_JSON
 EOF
 
   chmod 600 "$CONFIG_FILE"
