@@ -170,17 +170,27 @@ auto_add_crontab() {
 }
 
 # 本地数据库文件备份函数（零开销，不经过API）
+# 注意：备份时排除流量统计表 stats（该表可能达数十万行、上百MB，不属于配置备份范畴）
 backup_local_db() {
   local db_src="$DB_SOURCE"
   local db_dst="$1"
+  local db_tmp=""
   
   if [[ ! -f "$db_src" ]]; then
     return 1
   fi
   
   if command -v sqlite3 &> /dev/null; then
-    # 使用sqlite3在线备份，不锁库，服务零感知
-    sqlite3 "$db_src" ".backup '$db_dst'" > /dev/null 2>&1
+    # 1. 使用sqlite3在线备份到临时库（不锁库，服务零感知）
+    db_tmp="${db_dst}.full"
+    if ! sqlite3 "$db_src" ".backup '$db_tmp'" > /dev/null 2>&1; then
+      return 1
+    fi
+    # 2. 在临时库上删除流量统计表 stats 并收缩体积（stats 仅面板展示用，非配置数据）
+    sqlite3 "$db_tmp" "DROP TABLE IF EXISTS stats;" > /dev/null 2>&1 || true
+    sqlite3 "$db_tmp" "VACUUM;" > /dev/null 2>&1 || true
+    # 3. 移动最终库到目标位置
+    mv -f "$db_tmp" "$db_dst"
   else
     # 回退到cp（需确保S-UI当前无写入，通常夜间备份安全）
     cp -f "$db_src" "$db_dst"
